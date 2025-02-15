@@ -3,13 +3,13 @@ from dotenv import load_dotenv
 import base64
 from PyPDF2 import PdfReader
 from langchain.text_splitter import CharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings, HuggingFaceInstructEmbeddings
-from langchain.vectorstores import FAISS
-from langchain.chat_models import ChatOpenAI
+from langchain_community.embeddings import OpenAIEmbeddings, HuggingFaceInstructEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_community.chat_models import ChatOpenAI
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
-from langchain.schema import Document
-from langchain.llms import HuggingFaceHub
+from langchain.schema import Document, BaseRetriever
+from langchain_community.llms import HuggingFaceHub
 from htmlTemplates import css, bot_template, user_template
 import boto3
 import io
@@ -18,6 +18,7 @@ import time
 import re
 import os
 import uuid
+from typing import List
 
 # Load environment variables
 load_dotenv()
@@ -91,7 +92,7 @@ def set_page_container_style(
 def apply_custom_styling(has_document):
     set_page_container_style(has_document=has_document)
 
-def extract_text_with_textract(pdf_file, file_name):
+async def extract_text_with_textract(pdf_file, file_name):
     # Initialize Textract client
     textract = boto3.client('textract')
     s3 = boto3.client('s3')
@@ -135,7 +136,7 @@ def extract_text_with_textract(pdf_file, file_name):
             if status in ['SUCCEEDED', 'FAILED']:
                 break
                 
-            time.sleep(1)
+            time.sleep(3)
         
         try:
             # Clean up the S3 file regardless of success/failure
@@ -147,84 +148,91 @@ def extract_text_with_textract(pdf_file, file_name):
             st.warning(f"Warning: Could not delete temporary S3 file: {str(e)}")
         
         if status == 'SUCCEEDED':
-            # Get all pages
-            pages = []
+            # Get all blocks from all pages
+            blocks = []
+            next_token = None
             
-            # Get the first page
-            pages.append(response)
+            while True:
+                if next_token:
+                    response = textract.get_document_text_detection(JobId=job_id, NextToken=next_token)
+                else:
+                    response = textract.get_document_text_detection(JobId=job_id)
+                
+                blocks.extend(response['Blocks'])
+                
+                if 'NextToken' in response:
+                    next_token = response['NextToken']
+                else:
+                    break
             
-            # If there are more pages, get them
-            next_token = response.get('NextToken', None)
-            while next_token:
-                response = textract.get_document_text_detection(
-                    JobId=job_id,
-                    NextToken=next_token
-                )
-                pages.append(response)
-                next_token = response.get('NextToken', None)
-            
-            # Extract text from all pages
+            # Process blocks to reconstruct text with page numbers
             text = ""
-            for page in pages:
-                for item in page['Blocks']:
-                    if item['BlockType'] == 'LINE':
-                        text += item['Text'] + "\n"
+            chunk_locations = []
+            current_page = None
+            page_text = ""
             
-            if text:
-                st.write(f"Successfully extracted {len(text)} characters")
-                return text
-            else:
-                st.warning("Textract processed the document but found no text")
-                return ""
+            for block in blocks:
+                if block['BlockType'] == 'PAGE':
+                    # When we encounter a new page, save the previous page's text
+                    if current_page is not None and page_text:
+                        chunk_locations.append({
+                            'file': file_name,
+                            'page': current_page,
+                            'text': page_text,
+                            'start_char': len(text),
+                            'end_char': len(text) + len(page_text)
+                        })
+                        text += page_text
+                        page_text = ""
+                    
+                    current_page = block['Page']
+                
+                elif block['BlockType'] == 'LINE' and current_page is not None:
+                    page_text += block['Text'] + "\n"
+            
+            # Don't forget to add the last page
+            if current_page is not None and page_text:
+                chunk_locations.append({
+                    'file': file_name,
+                    'page': current_page,
+                    'text': page_text,
+                    'start_char': len(text),
+                    'end_char': len(text) + len(page_text)
+                })
+                text += page_text
+            
+            total_chars = len(text)
+            st.write(f"Successfully extracted {total_chars} characters")
+            
+            return text, chunk_locations
+            
         else:
-            st.error(f"Textract job failed with status: {status}")
-            return ""
+            error_message = response.get('StatusMessage', 'Unknown error')
+            raise Exception(f"Textract job failed: {error_message}")
             
-    except textract.exceptions.InvalidDocumentException:
-        st.error("The document format is not supported or is corrupted")
-        return ""
-    except textract.exceptions.InvalidParameterException:
-        st.error("The document is too large or in an invalid format")
-        return ""
-    except textract.exceptions.UnsupportedDocumentException:
-        st.error("The document format is not supported by Textract")
-        return ""
-    except textract.exceptions.DocumentTooLargeException:
-        st.error("The document is too large for Textract to process")
-        return ""
-    except textract.exceptions.ProvisionedThroughputExceededException:
-        st.error("Textract throughput limit exceeded. Please try again in a moment")
-        return ""
-    except textract.exceptions.InternalServerError:
-        st.error("AWS Textract encountered an internal error. Please try again")
-        return ""
     except Exception as e:
         st.error(f"Error processing document with Textract: {str(e)}")
         return ""
 
-def get_pdf_text(pdf_docs):
+async def process_documents(pdf_docs):
     text = ""
     chunk_locations = []
+    has_text = False
     
     for pdf in pdf_docs:
-        st.write(f"Processing file: {pdf.name}")
+        # First try standard PDF text extraction
         pdf_reader = PdfReader(pdf)
         
-        # Check if any text was extracted from the document
-        has_text = False
-        
-        # Try PyPDF2 first
+        # Try to extract text from each page
         for page_num in range(len(pdf_reader.pages)):
             page = pdf_reader.pages[page_num]
             page_text = page.extract_text()
             
-            # Debug information
-            char_count = len(page_text) if page_text else 0
-            st.write(f"Page {page_num + 1}: {char_count} characters")
+            # Print the number of characters found
+            st.write(f"Page {page_num + 1}: {len(page_text)} characters")
             
             if page_text:
                 has_text = True
-                # Store the location information for this chunk
                 chunk_locations.append({
                     'file': pdf.name,
                     'page': page_num + 1,
@@ -234,89 +242,90 @@ def get_pdf_text(pdf_docs):
                 })
                 text += page_text
         
-        # If no text was found, try Textract
         if not has_text:
-            st.info(f"No text found in '{pdf.name}' using standard extraction. Trying AWS Textract...")
+            st.write(f"No text found in '{pdf.name}' using standard extraction. Trying AWS Textract...")
+            
+            # Get PDF file size
+            pdf.seek(0, 2)  # Seek to end
+            pdf_size = pdf.tell()
+            st.write(f"PDF size: {pdf_size} bytes")
             
             # Reset file pointer
             pdf.seek(0)
             
             # Try extracting text with Textract
-            textract_text = extract_text_with_textract(pdf, pdf.name)
+            textract_text, textract_chunk_locations = await extract_text_with_textract(pdf, pdf.name)
             
             if textract_text:
                 has_text = True
-                chunk_locations.append({
-                    'file': pdf.name,
-                    'page': 1,  # Textract doesn't provide page numbers
-                    'text': textract_text,
-                    'start_char': len(text),
-                    'end_char': len(text) + len(textract_text)
-                })
+                chunk_locations.extend(textract_chunk_locations)
                 text += textract_text
                 st.success(f"Successfully extracted text from '{pdf.name}' using AWS Textract")
             else:
-                st.error(f"""Could not extract text from '{pdf.name}' using either method. This might be due to:
-                1. The PDF is heavily secured
-                2. The image quality is too low
-                3. The document contains unsupported characters or formatting""")
-                return "", []
+                st.error(f"Could not extract any text from '{pdf.name}' using either method")
+    
+    if not has_text:
+        st.error("No text could be extracted from any of the uploaded documents")
+        return None, None
     
     return text, chunk_locations
 
 def get_text_chunks(text, chunk_locations):
-    # Split text into chunks
     text_splitter = CharacterTextSplitter(
         separator="\n",
         chunk_size=1000,
         chunk_overlap=200,
         length_function=len
     )
+    
     chunks = text_splitter.split_text(text)
     
-    # Calculate chunk locations
-    new_chunk_locations = []
-    
-    for chunk in chunks:
-        # Find which page this chunk belongs to
+    # Map chunks back to their source pages
+    chunk_metadata = []
+    for i, chunk in enumerate(chunks):
         chunk_start = text.find(chunk)
         chunk_end = chunk_start + len(chunk)
         
-        # Find the page that contains this chunk
-        containing_page = None
+        # Find which original chunk(s) this piece came from
+        relevant_pages = set()
         for loc in chunk_locations:
-            if (chunk_start >= loc['start_char'] and chunk_start < loc['end_char']) or \
-               (chunk_end > loc['start_char'] and chunk_end <= loc['end_char']):
-                containing_page = loc
-                break
+            if (chunk_start < loc['end_char'] and chunk_end > loc['start_char']):
+                relevant_pages.add(loc['page'])
         
-        if containing_page:
-            new_chunk_locations.append({
-                'file': containing_page['file'],
-                'page': containing_page['page'],
-                'text': chunk[:200] + "..." if len(chunk) > 200 else chunk
-            })
-        else:
-            # Fallback if we can't find the page
-            new_chunk_locations.append({
-                'file': chunk_locations[0]['file'],
-                'page': 1,
-                'text': chunk[:200] + "..." if len(chunk) > 200 else chunk
-            })
+        chunk_metadata.append({
+            'chunk_index': i,
+            'pages': list(relevant_pages)
+        })
     
-    return chunks, new_chunk_locations
+    return chunks, chunk_metadata
 
-def get_vectorstore(text_chunks):
+def get_vectorstore(text_chunks, chunk_metadata):
     embeddings = OpenAIEmbeddings()
     # Store chunk locations in metadata
     documents = [
         Document(
             page_content=chunk,
-            metadata={'chunk_index': i}
-        ) for i, chunk in enumerate(text_chunks)
+            metadata={'chunk_index': metadata['chunk_index'], 'pages': metadata['pages']}
+        ) for chunk, metadata in zip(text_chunks, chunk_metadata)
     ]
     vectorstore = FAISS.from_documents(documents, embeddings)
     return vectorstore
+
+class ScoredVectorStoreRetriever(BaseRetriever):
+    def __init__(self, vectorstore):
+        super().__init__()
+        self._vectorstore = vectorstore
+        
+    def _get_relevant_documents(self, query: str) -> List:
+        docs_and_scores = self._vectorstore.similarity_search_with_score(query, k=4)
+        docs = []
+        for doc, score in docs_and_scores:
+            doc.metadata['score'] = score
+            docs.append(doc)
+        return docs
+        
+    async def _aget_relevant_documents(self, query: str) -> List:
+        raise NotImplementedError("Async retrieval not implemented")
 
 def get_conversation_chain(vectorstore):
     llm = ChatOpenAI()
@@ -326,14 +335,8 @@ def get_conversation_chain(vectorstore):
         output_key='answer'
     )
     
-    # Create a retriever that includes similarity scores
-    retriever = vectorstore.as_retriever(
-        search_type="similarity_score_threshold",
-        search_kwargs={
-            "score_threshold": 0.5,
-            "k": 4
-        }
-    )
+    # Create our custom retriever that includes similarity scores
+    retriever = ScoredVectorStoreRetriever(vectorstore)
     
     conversation_chain = ConversationalRetrievalChain.from_llm(
         llm=llm,
@@ -342,6 +345,7 @@ def get_conversation_chain(vectorstore):
         return_source_documents=True,
         output_key='answer'
     )
+    
     return conversation_chain
 
 def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
@@ -605,14 +609,14 @@ def display_chat_history():
     # Create a scrolling container for chat messages with fixed height
     chat_container = st.container(height=650)
     with chat_container:
-        source_counter = 0
         for i, message in enumerate(st.session_state.chat_history):
             if i % 2 == 0:
                 st.markdown(user_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
             else:
                 bot_message = bot_template.replace("{{MSG}}", message.content)
+                st.markdown(bot_message, unsafe_allow_html=True)
                 
-                # Add sources explanation if we have source documents
+                # Add sources explanation and display sources
                 if st.session_state.current_source_docs:
                     st.markdown("""
                         <div style="margin-top: 10px; margin-bottom: 10px; padding: 10px; border-radius: 5px; background-color: #f0f2f6;">
@@ -624,55 +628,37 @@ def display_chat_history():
                     """, unsafe_allow_html=True)
                     
                     # Display source references with relevance scores
-                    for doc in st.session_state.current_source_docs:
-                        chunk_index = doc.metadata.get('chunk_index')
-                        if chunk_index is not None and chunk_index < len(st.session_state.chunk_locations):
-                            location = st.session_state.chunk_locations[chunk_index]
-                            page_num = location['page']
-                            
-                            # Get similarity score from metadata or default to a calculated one
-                            score = doc.metadata.get('score', 0.0)
-                            relevance_score = int(score * 100)
-                            
-                            st.markdown(f'''
-                                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-                                    <button class="page-ref" data-page="{page_num}" 
-                                            style="min-width: 150px;">
-                                        📄 Page {page_num}
-                                    </button>
-                                    <div style="
-                                        background: linear-gradient(90deg, #00acee {relevance_score}%, #f0f2f6 {relevance_score}%);
-                                        height: 8px;
-                                        width: 100px;
-                                        border-radius: 4px;
-                                        margin-right: 5px;">
-                                    </div>
-                                    <span style="color: #666; font-size: 0.8em;">{relevance_score}% relevant</span>
+                    for idx, doc in enumerate(st.session_state.current_source_docs, 1):
+                        # Get pages from metadata
+                        pages = doc.metadata.get('pages', [])
+                        page_str = f"Page{' ' if len(pages) == 1 else 's '}{', '.join(map(str, pages))}"
+                        
+                        # Get similarity score from metadata or calculate based on position
+                        score = doc.metadata.get('score', None)
+                        if score is None:
+                            # Fallback to position-based scoring if no actual score
+                            score = max(1.0 - (idx - 1) * 0.15, 0.4)  # Decrease by 15% for each position, minimum 40%
+                        
+                        # Convert score to percentage
+                        relevance_score = int(score * 100)
+                        
+                        # Create the source reference with relevance bar
+                        st.markdown(f'''
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                                <button class="page-ref" data-page="{pages[0] if pages else 1}" 
+                                        style="min-width: 150px; padding: 5px 10px; border: 1px solid #ddd; border-radius: 5px; background: white;">
+                                    📄 Source {idx}: {page_str}
+                                </button>
+                                <div style="
+                                    background: linear-gradient(90deg, #00acee {relevance_score}%, #f0f2f6 {relevance_score}%);
+                                    height: 8px;
+                                    width: 100px;
+                                    border-radius: 4px;
+                                    margin-right: 5px;">
                                 </div>
-                            ''', unsafe_allow_html=True)
-                
-                st.markdown(bot_message, unsafe_allow_html=True)
-                
-                # Display source references
-                if st.session_state.current_source_docs:
-                    st.markdown("### Sources:", unsafe_allow_html=True)
-                    for i, doc in enumerate(st.session_state.current_source_docs, 1):
-                        chunk_index = doc.metadata.get('chunk_index')
-                        if chunk_index is not None and chunk_index < len(st.session_state.chunk_locations):
-                            location = st.session_state.chunk_locations[chunk_index]
-                            page_num = location['page']
-                            source_counter += 1
-                            
-                            if st.button(f"📄 Source {i}: Page {page_num}", 
-                                       key=f"source_{source_counter}"):
-                                st.session_state.target_page = page_num
-                                st.rerun()
-                            
-                            st.markdown(f"""
-                                <div style="margin-left: 20px; margin-top: 5px; font-size: 0.9em; color: #666;">
-                                    "{location['text']}"
-                                </div>
-                            """, unsafe_allow_html=True)
+                                <span style="color: #666; font-size: 0.8em;">{relevance_score}% relevant</span>
+                            </div>
+                        ''', unsafe_allow_html=True)
 
 def main():
     # Initialize session state
@@ -706,23 +692,27 @@ def main():
             with st.spinner("Processing documents..."):
                 if pdf_docs:  # Only process if there are documents
                     try:
-                        # get pdf text
-                        raw_text, chunk_locations = get_pdf_text(pdf_docs)
-                        st.session_state.chunk_locations = chunk_locations
+                        # Process documents and handle async operation
+                        import asyncio
+                        raw_text, chunk_locations = asyncio.run(process_documents(pdf_docs))
                         
-                        # get the text chunks
-                        text_chunks, new_chunk_locations = get_text_chunks(raw_text, chunk_locations)
-                        
-                        # create vector store
-                        vectorstore = get_vectorstore(text_chunks)
-                        
-                        # create conversation chain
-                        st.session_state.conversation = get_conversation_chain(vectorstore)
-                        
-                        st.session_state.pdf_docs = pdf_docs
-                        st.session_state.processing_complete = True
-                        st.success("Documents processed successfully!")
-                        st.rerun()
+                        if raw_text and chunk_locations:
+                            # Store chunk locations in session state
+                            st.session_state.chunk_locations = chunk_locations
+                            
+                            # Get the text chunks
+                            text_chunks, new_chunk_locations = get_text_chunks(raw_text, chunk_locations)
+                            
+                            # Create vector store
+                            vectorstore = get_vectorstore(text_chunks, new_chunk_locations)
+                            
+                            # Create conversation chain
+                            st.session_state.conversation = get_conversation_chain(vectorstore)
+                            
+                            st.session_state.pdf_docs = pdf_docs
+                            st.session_state.processing_complete = True
+                            st.success("Documents processed successfully!")
+                            st.rerun()
                     except Exception as e:
                         st.error(f"Error processing documents: {str(e)}")
                         st.session_state.processing_complete = False
