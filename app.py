@@ -4,7 +4,12 @@ import base64
 from PyPDF2 import PdfReader
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.embeddings import OpenAIEmbeddings, HuggingFaceInstructEmbeddings
-from langchain_community.vectorstores import FAISS
+# Import FAISS with error handling
+try:
+    from langchain_community.vectorstores import FAISS
+except ImportError:
+    print("Error importing FAISS. Please install it with 'pip install faiss-cpu' or 'pip install faiss-gpu'")
+    # We'll handle this error when the function is called
 from langchain_community.chat_models import ChatOpenAI
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
@@ -308,7 +313,11 @@ def get_vectorstore(text_chunks, chunk_metadata):
             metadata={'chunk_index': metadata['chunk_index'], 'pages': metadata['pages']}
         ) for chunk, metadata in zip(text_chunks, chunk_metadata)
     ]
-    vectorstore = FAISS.from_documents(documents, embeddings)
+    try:
+        vectorstore = FAISS.from_documents(documents, embeddings)
+    except Exception as e:
+        print(f"Error initializing FAISS: {str(e)}")
+        vectorstore = None
     return vectorstore
 
 class ScoredVectorStoreRetriever(BaseRetriever):
@@ -328,25 +337,33 @@ class ScoredVectorStoreRetriever(BaseRetriever):
         raise NotImplementedError("Async retrieval not implemented")
 
 def get_conversation_chain(vectorstore):
-    llm = ChatOpenAI()
-    memory = ConversationBufferMemory(
-        memory_key='chat_history',
-        return_messages=True,
-        output_key='answer'
-    )
-    
-    # Create our custom retriever that includes similarity scores
-    retriever = ScoredVectorStoreRetriever(vectorstore)
-    
-    conversation_chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=retriever,
-        memory=memory,
-        return_source_documents=True,
-        output_key='answer'
-    )
-    
-    return conversation_chain
+    try:
+        llm = ChatOpenAI()
+        memory = ConversationBufferMemory(
+            memory_key='chat_history',
+            return_messages=True,
+            output_key='answer'
+        )
+        
+        # Verify vectorstore is valid
+        if vectorstore is None:
+            raise ValueError("Vector store is None, cannot create conversation chain")
+        
+        # Create our custom retriever that includes similarity scores
+        retriever = ScoredVectorStoreRetriever(vectorstore)
+        
+        conversation_chain = ConversationalRetrievalChain.from_llm(
+            llm=llm,
+            retriever=retriever,
+            memory=memory,
+            return_source_documents=True,
+            output_key='answer'
+        )
+        
+        return conversation_chain
+    except Exception as e:
+        print(f"Error creating conversation chain: {str(e)}")
+        raise Exception(f"Failed to initialize conversation chain: {str(e)}")
 
 def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
     try:
@@ -383,9 +400,9 @@ def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
                     transition: opacity 0.3s ease-in-out; z-index: 1000;">Loading viewer...</div>
                 <div id="error" style="display: none; margin-bottom: 10px; padding: 10px; background: #ffe6e6; border-radius: 4px; color: red;"></div>
                 <div id="zoom-controls" style="margin-bottom: 10px;">
-                    <button onclick="zoomOut()" style="margin-right: 10px; padding: 5px 10px;">-</button>
+                    <button onclick="zoomIn()" style="margin-right: 10px; padding: 5px 10px;">-</button>
                     <span id="zoom-level" style="margin-right: 10px;">100%</span>
-                    <button onclick="zoomIn()" style="margin-right: 10px; padding: 5px 10px;">+</button>
+                    <button onclick="zoomOut()" style="margin-right: 10px; padding: 5px 10px;">+</button>
                     <button onclick="resetZoom()" style="padding: 5px 10px;">Autofit</button>
                 </div>
             </div>
@@ -813,6 +830,10 @@ def main():
                             
                             # Create vector store
                             vectorstore = get_vectorstore(text_chunks, new_chunk_locations)
+                            
+                            # Check if vectorstore was created successfully
+                            if vectorstore is None:
+                                raise Exception("Failed to initialize vector database. Please check that faiss-cpu is installed correctly.")
                             
                             # Create conversation chain
                             st.session_state.conversation = get_conversation_chain(vectorstore)
