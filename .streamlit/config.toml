@@ -1,0 +1,13 @@
+[theme]
+base = "light"
+
+[ui]
+# Hide the theme selector in the UI
+hideTopBar = true
+
+[browser]
+gatherUsageStats = false
+
+[server]
+# Disable theme selection via URL parameters
+enableThemeSelection = false
