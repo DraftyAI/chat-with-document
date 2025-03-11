@@ -963,56 +963,8 @@ def main():
     if "submitted_input" not in st.session_state:
         st.session_state.submitted_input = None
 
-    # Upload PDFs
-    with st.sidebar:
-        st.markdown("### Your documents")
-        pdf_docs = st.file_uploader(
-            "Upload your PDFs here and click on 'Process'", 
-            accept_multiple_files=True,
-            type=['pdf'],
-            label_visibility="collapsed"
-        )
-        if st.button("Process", use_container_width=True):
-            with st.spinner("Processing documents..."):
-                if pdf_docs:  # Only process if there are documents
-                    try:
-                        # Process documents and handle async operation
-                        import asyncio
-                        raw_text, chunk_locations = asyncio.run(process_documents(pdf_docs))
-                        
-                        if raw_text and chunk_locations:
-                            # Store chunk locations in session state
-                            st.session_state.chunk_locations = chunk_locations
-                            print(f"Stored {len(chunk_locations)} chunk locations in session state")
-                            # Print the first chunk location as a sample
-                            if chunk_locations:
-                                print(f"Sample chunk location: {chunk_locations[0]}")
-                            
-                            # Get the text chunks
-                            text_chunks, new_chunk_locations = get_text_chunks(raw_text, chunk_locations)
-                            
-                            # Create vector store
-                            vectorstore = get_vectorstore(text_chunks, new_chunk_locations)
-                            
-                            # Check if vectorstore was created successfully
-                            if vectorstore is None:
-                                raise Exception("Failed to initialize vector database. Please check that faiss-cpu is installed correctly.")
-                            
-                            # Create conversation chain
-                            st.session_state.conversation = get_conversation_chain(vectorstore)
-                            
-                            st.session_state.pdf_docs = pdf_docs
-                            st.session_state.processing_complete = True
-                            st.success("Documents processed successfully!")
-                            st.rerun()
-                    except Exception as e:
-                        st.error(f"Error processing documents: {str(e)}")
-                        st.session_state.processing_complete = False
-                else:
-                    st.warning("Please upload at least one PDF document.")
-
-    # Create the main layout based on whether documents are processed
-    if st.session_state.pdf_docs and st.session_state.processing_complete:
+    # Check if processing is complete
+    if st.session_state.processing_complete:
         # Create columns for the document viewer and chat
         doc_col, chat_col = st.columns([1, 1], gap="medium")
         
@@ -1106,6 +1058,58 @@ def main():
             """,
             unsafe_allow_html=True
         )
+        
+        # Upload PDFs - Moved from sidebar to main area using columns for proper width control
+        col1, col2, col3 = st.columns([1, 1, 1])
+        
+        with col2:
+            st.markdown("<div style='background-color: #f9f9f9; border-radius: 10px; padding: 20px;'>", unsafe_allow_html=True)
+            st.markdown("### Your documents")
+            pdf_docs = st.file_uploader(
+                "Upload your PDFs here and click on 'Process'", 
+                accept_multiple_files=True,
+                type=['pdf'],
+                label_visibility="collapsed"
+            )
+            if st.button("Process", use_container_width=True):
+                with st.spinner("Processing documents..."):
+                    if pdf_docs:  # Only process if there are documents
+                        try:
+                            # Process documents and handle async operation
+                            import asyncio
+                            raw_text, chunk_locations = asyncio.run(process_documents(pdf_docs))
+                            
+                            if raw_text and chunk_locations:
+                                # Store chunk locations in session state
+                                st.session_state.chunk_locations = chunk_locations
+                                print(f"Stored {len(chunk_locations)} chunk locations in session state")
+                                # Print the first chunk location as a sample
+                                if chunk_locations:
+                                    print(f"Sample chunk location: {chunk_locations[0]}")
+                                
+                                # Get the text chunks
+                                text_chunks, new_chunk_locations = get_text_chunks(raw_text, chunk_locations)
+                                
+                                # Create vector store
+                                vectorstore = get_vectorstore(text_chunks, new_chunk_locations)
+                                
+                                # Check if vectorstore was created successfully
+                                if vectorstore is None:
+                                    raise Exception("Failed to initialize vector database. Please check that faiss-cpu is installed correctly.")
+                                
+                                # Create conversation chain
+                                st.session_state.conversation = get_conversation_chain(vectorstore)
+                                
+                                st.session_state.pdf_docs = pdf_docs
+                                st.session_state.processing_complete = True
+                                st.success("Documents processed successfully!")
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"Error processing documents: {str(e)}")
+                            st.session_state.processing_complete = False
+                    else:
+                        st.warning("Please upload at least one PDF document.")
+            st.markdown("</div>", unsafe_allow_html=True)
 
 if __name__ == '__main__':
     main()
