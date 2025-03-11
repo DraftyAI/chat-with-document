@@ -35,13 +35,12 @@ load_dotenv()
 ENVIRONMENT = os.getenv('ENVIRONMENT', 'dev')
 S3_BUCKET_NAME = f'draftyai-textract-chat-with-docs-{ENVIRONMENT}'
 
-# Set page config to minimize default padding
+# Set page configuration
 st.set_page_config(
-    page_title="Chat with multiple PDFs",
-    page_icon=":books:",
+    page_title="Chat with PDF - DraftyAI",
+    page_icon="📄",
     layout="wide",
-    initial_sidebar_state="expanded",
-    menu_items=None
+    initial_sidebar_state="expanded"
 )
 
 # Constants for styling
@@ -100,10 +99,26 @@ def set_page_container_style(
 def apply_custom_styling(has_document):
     set_page_container_style(has_document=has_document)
 
+def get_boto3_client(service_name):
+    """Create a boto3 client with profile or credentials fallback and region."""
+    region_name = os.getenv('AWS_REGION', 'us-east-1')
+    profile_name = os.getenv('AWS_PROFILE')
+    
+    print(f"Using AWS region: {region_name}")
+    
+    if profile_name:
+        print(f"Using AWS profile: {profile_name}")
+        session = boto3.Session(profile_name=profile_name, region_name=region_name)
+        return session.client(service_name)
+    else:
+        print("Using AWS access keys from environment variables")
+        # This will automatically use AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables
+        return boto3.client(service_name, region_name=region_name)
+
 async def extract_text_with_textract(pdf_file, file_name):
-    # Initialize Textract client
-    textract = boto3.client('textract')
-    s3 = boto3.client('s3')
+    # Initialize AWS clients
+    textract = get_boto3_client('textract')
+    s3 = get_boto3_client('s3')
     
     # Read the PDF file into bytes
     pdf_bytes = pdf_file.read()
@@ -831,7 +846,105 @@ def display_chat_history():
                                 </div>
                             ''', unsafe_allow_html=True)
 
+def render_drafty_header():
+    """Render the DraftyAI header that looks like the production app."""
+    # Load and encode the logo image
+    import base64
+    from pathlib import Path
+    
+    # Read the image file as bytes and encode it
+    logo_path = Path("public/logo.avif")
+    with open(logo_path, "rb") as f:
+        logo_bytes = f.read()
+    logo_b64 = base64.b64encode(logo_bytes).decode("utf-8")
+    
+    # Create the header HTML with the base64 encoded logo image
+    header_html = f"""
+    <div style="
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 20px;
+        background-color: white;
+        border-bottom: 1px solid #e0e0e0;
+        margin-bottom: 30px;
+        height: 60px;
+    ">
+        <div style="display: flex; align-items: center;">
+            <div style="width: 130px;">
+                <img src="data:image/avif;base64,{logo_b64}" alt="DraftyAI Logo" style="width: 100%;">
+            </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 30px;">
+            <a href="#" style="display: flex; align-items: center; gap: 5px; text-decoration: none;">
+                <span style="color: #666; font-size: 14px;">
+                    <i class="fas fa-home"></i> Dashboard
+                </span>
+            </a>
+            <a href="#" style="display: flex; align-items: center; gap: 5px; text-decoration: none;">
+                <span style="color: #666; font-size: 14px;">
+                    <i class="fas fa-users"></i> Clients
+                </span>
+            </a>
+            <a href="#" style="display: flex; align-items: center; gap: 5px; text-decoration: none;">
+                <span style="color: #666; font-size: 14px;">
+                    <i class="fas fa-file-alt"></i> My Drafts
+                </span>
+            </a>
+            <div style="
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                background-color: #f8f9fa;
+                padding: 5px 12px;
+                border-radius: 20px;
+            ">
+                <div style="
+                    width: 24px;
+                    height: 24px;
+                    border-radius: 50%;
+                    background-color: #6c757d;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 12px;
+                    color: white;
+                    font-weight: bold;
+                ">J</div>
+                <span style="color: #666; font-size: 13px; white-space: nowrap;">Remaining Credits</span>
+                <div style="
+                    width: 100px;
+                    height: 8px;
+                    background-color: #e9ecef;
+                    border-radius: 4px;
+                    overflow: hidden;
+                ">
+                    <div style="
+                        width: 33%;
+                        height: 100%;
+                        background-color: #4285F4;
+                        border-radius: 4px;
+                    "></div>
+                </div>
+                <span style="color: #666; font-size: 13px; white-space: nowrap;">250/750</span>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Add Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+    """
+    
+    # Render the header
+    st.markdown(header_html, unsafe_allow_html=True)
+
 def main():
+    # Render the DraftyAI header
+    render_drafty_header()
+    
+    # Add some spacing after the header
+    st.markdown("<div style='padding: 20px;'></div>", unsafe_allow_html=True)
+    
     # Initialize session state
     if "conversation" not in st.session_state:
         st.session_state.conversation = None
