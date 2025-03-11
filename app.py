@@ -7,9 +7,12 @@ from langchain_community.embeddings import OpenAIEmbeddings, HuggingFaceInstruct
 # Import FAISS with error handling
 try:
     from langchain_community.vectorstores import FAISS
+    FAISS_AVAILABLE = True
 except ImportError:
     print("Error importing FAISS. Please install it with 'pip install faiss-cpu' or 'pip install faiss-gpu'")
-    # We'll handle this error when the function is called
+    FAISS_AVAILABLE = False
+    # Import a fallback vectorstore
+    from langchain_community.vectorstores import Chroma
 from langchain_community.chat_models import ChatOpenAI
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
@@ -305,20 +308,67 @@ def get_text_chunks(text, chunk_locations):
     return chunks, chunk_metadata
 
 def get_vectorstore(text_chunks, chunk_metadata):
-    embeddings = OpenAIEmbeddings()
-    # Store chunk locations in metadata
-    documents = [
-        Document(
-            page_content=chunk,
-            metadata={'chunk_index': metadata['chunk_index'], 'pages': metadata['pages']}
-        ) for chunk, metadata in zip(text_chunks, chunk_metadata)
-    ]
+    print("Starting vectorstore creation...")
     try:
-        vectorstore = FAISS.from_documents(documents, embeddings)
+        # First, check if FAISS is properly imported
+        import sys
+        print(f"Python version: {sys.version}")
+        
+        # Try to import faiss directly to check if it's accessible
+        try:
+            import faiss
+            print(f"FAISS version: {getattr(faiss, '__version__', 'unknown')}")
+        except ImportError as e:
+            print(f"Direct FAISS import failed: {str(e)}")
+        except Exception as e:
+            print(f"FAISS import error: {str(e)}")
+        
+        # Create embeddings
+        print("Creating OpenAI embeddings...")
+        embeddings = OpenAIEmbeddings()
+        print("Embeddings created successfully")
+        
+        # Store chunk locations in metadata
+        print(f"Creating {len(text_chunks)} document objects...")
+        documents = [
+            Document(
+                page_content=chunk,
+                metadata={'chunk_index': metadata['chunk_index'], 'pages': metadata['pages']}
+            ) for chunk, metadata in zip(text_chunks, chunk_metadata)
+        ]
+        print("Document objects created successfully")
+        
+        # Create FAISS index
+        if FAISS_AVAILABLE:
+            print("Attempting to create FAISS index...")
+            try:
+                # Test basic FAISS functionality
+                import faiss
+                import numpy as np
+                print("Testing basic FAISS functionality...")
+                dimension = 128
+                index = faiss.IndexFlatL2(dimension)
+                print("Basic FAISS test successful")
+                
+                # Now try to create the actual vectorstore
+                vectorstore = FAISS.from_documents(documents, embeddings)
+                print("FAISS index created successfully")
+            except Exception as e:
+                print(f"FAISS index creation failed: {str(e)}")
+                print("Falling back to Chroma...")
+                vectorstore = Chroma.from_documents(documents, embeddings)
+                print("Chroma index created successfully")
+        else:
+            print("FAISS not available, using Chroma as fallback...")
+            vectorstore = Chroma.from_documents(documents, embeddings)
+            print("Chroma index created successfully")
+        return vectorstore
     except Exception as e:
-        print(f"Error initializing FAISS: {str(e)}")
-        vectorstore = None
-    return vectorstore
+        import traceback
+        print(f"Error in get_vectorstore: {str(e)}")
+        print("Traceback:")
+        traceback.print_exc()
+        return None
 
 class ScoredVectorStoreRetriever(BaseRetriever):
     def __init__(self, vectorstore):
