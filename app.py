@@ -383,9 +383,9 @@ def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
                     transition: opacity 0.3s ease-in-out; z-index: 1000;">Loading viewer...</div>
                 <div id="error" style="display: none; margin-bottom: 10px; padding: 10px; background: #ffe6e6; border-radius: 4px; color: red;"></div>
                 <div id="zoom-controls" style="margin-bottom: 10px;">
-                    <button onclick="zoomIn()" style="margin-right: 10px; padding: 5px 10px;">-</button>
+                    <button onclick="zoomOut()" style="margin-right: 10px; padding: 5px 10px;">-</button>
                     <span id="zoom-level" style="margin-right: 10px;">100%</span>
-                    <button onclick="zoomOut()" style="margin-right: 10px; padding: 5px 10px;">+</button>
+                    <button onclick="zoomIn()" style="margin-right: 10px; padding: 5px 10px;">+</button>
                     <button onclick="resetZoom()" style="padding: 5px 10px;">Autofit</button>
                 </div>
             </div>
