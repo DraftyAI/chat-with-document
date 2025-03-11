@@ -350,6 +350,9 @@ def get_conversation_chain(vectorstore):
 
 def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
     try:
+        # Add logging for highlight_text
+        print(f"display_pdf called with highlight_text: {highlight_text}")
+        
         # Try to read with PyPDF2 to validate PDF
         try:
             reader = PdfReader(io.BytesIO(pdf_bytes))
@@ -360,6 +363,17 @@ def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
 
         # Encode PDF bytes to base64
         base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
+        
+        # Add more logging for highlight_text
+        if highlight_text:
+            print(f"Highlight text before passing to JavaScript: '{highlight_text}'")
+            # Escape any special characters for JavaScript
+            highlight_text = highlight_text.replace("'", "\\'").replace('"', '\\"').replace('\n', ' ')
+            print(f"Escaped highlight text: '{highlight_text}'")
+        else:
+            print("No highlight text to pass to JavaScript")
+            # Set to empty string instead of None for JavaScript
+            highlight_text = ""
         
         # Create viewer HTML
         pdf_display = f'''
@@ -418,17 +432,23 @@ def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
                     }}
 
                     function scrollToPage(pageNum) {{
+                        console.log('scrollToPage called with pageNum:', pageNum);
                         const container = document.getElementById('pdf-container');
                         const pages = container.children;
+                        console.log('Found', pages.length, 'pages in container');
                         if (pageNum > 0 && pageNum <= pages.length) {{
                             const targetPage = pages[pageNum - 1];
                             if (targetPage) {{
+                                console.log('Scrolling to page', pageNum);
                                 targetPage.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
                             }}
+                        }} else {{
+                            console.warn('Invalid page number:', pageNum, 'Total pages:', pages.length);
                         }}
                     }}
 
                     addEventListener('message', function(e) {{
+                        console.log('PDF viewer received message:', e.data);
                         if (e.data.type === 'scrollToPage') {{
                             scrollToPage(e.data.pageNum);
                         }}
@@ -462,12 +482,58 @@ def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
                             viewport: viewport
                         }}).promise;
 
-                        if ('{highlight_text}') {{
+                        // Only highlight if highlight_text is provided and not empty
+                        const highlightText = '{highlight_text}';
+                        console.log('Page', pageNum, 'checking highlight text:', highlightText);
+                        console.log('Is highlight text empty?', !highlightText || highlightText.trim() === '');
+                        console.log('Highlight text type:', typeof highlightText);
+                        console.log('Highlight text length:', highlightText ? highlightText.length : 0);
+                        
+                        // Check that highlight text is not empty and not the string "None"
+                        if (highlightText && highlightText.trim() !== '' && highlightText !== 'None') {{
+                            console.log('Highlighting text on page', pageNum, ':', highlightText);
                             const textContent = await page.getTextContent();
                             const textItems = textContent.items;
                             
-                            textItems.forEach(function(textItem) {{
-                                if (textItem.str.toLowerCase().includes('{highlight_text}'.toLowerCase())) {{
+                            console.log('Found', textItems.length, 'text items on page', pageNum);
+                            
+                            // Keep track of whether we found any matches
+                            let foundMatch = false;
+                            let matchCount = 0;
+                            
+                            // Break the highlight text into words for more flexible matching
+                            const highlightWords = highlightText.toLowerCase().split(/\s+/).filter(word => word.length > 3);
+                            console.log('Searching for words:', highlightWords);
+                            
+                            // Highlight any text item that contains any of the significant words
+                            textItems.forEach(function(textItem, index) {{
+                                // Log every 20th item to avoid console spam
+                                if (index % 20 === 0) {{
+                                    console.log('Sample text item', index, ':', textItem.str);
+                                }}
+                                
+                                const itemText = textItem.str.toLowerCase();
+                                
+                                // Check if this text item contains any of our significant words
+                                let shouldHighlight = false;
+                                for (const word of highlightWords) {{
+                                    if (word.length > 3 && itemText.includes(word)) {{
+                                        shouldHighlight = true;
+                                        console.log('Found word match:', word, 'in:', itemText);
+                                        break;
+                                    }}
+                                }}
+                                
+                                // Direct match check as fallback
+                                if (!shouldHighlight && itemText.includes(highlightText.toLowerCase())) {{
+                                    shouldHighlight = true;
+                                    console.log('Found direct match in:', itemText);
+                                }}
+                                
+                                if (shouldHighlight) {{
+                                    foundMatch = true;
+                                    matchCount++;
+                                    
                                     const tx = pdfjsLib.Util.transform(
                                         viewport.transform,
                                         textItem.transform
@@ -481,6 +547,12 @@ def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
                                     context.globalAlpha = 1.0;
                                 }}
                             }});
+                            
+                            if (foundMatch) {{
+                                console.log('Found and highlighted', matchCount, 'matches on page', pageNum);
+                            }} else {{
+                                console.log('No matches found on page', pageNum);
+                            }}
                         }}
                     }}
 
@@ -562,22 +634,6 @@ def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
         
         st.components.v1.html(pdf_display, height=800, scrolling=True)
         
-        # Add a hidden component to handle page navigation
-        st.markdown(f'''
-            <script>
-                // Function to navigate to a specific page
-                window.navigateToPage = function(pageNum) {{
-                    const viewer = document.querySelector('iframe');
-                    if (viewer) {{
-                        viewer.contentWindow.postMessage({{
-                            type: 'scrollToPage',
-                            pageNum: pageNum
-                        }}, '*');
-                    }}
-                }};
-            </script>
-        ''', unsafe_allow_html=True)
-        
     except Exception as e:
         st.error(f"Error displaying PDF: {str(e)}")
 
@@ -590,14 +646,27 @@ def handle_userinput(user_question):
         if st.session_state.conversation is None:
             st.error("Please process the documents first!")
             return
+        
+        # Clear any existing highlight when asking a new question
+        st.session_state.highlight_text = ""  # Empty string instead of None
             
         response = st.session_state.conversation({'question': user_question})
         st.session_state.chat_history = response['chat_history']
         st.session_state.current_question = user_question
         if 'source_documents' in response:
             st.session_state.current_source_docs = response['source_documents']
+            # Log source documents and their metadata
+            print(f"Found {len(response['source_documents'])} source documents")
+            for i, doc in enumerate(response['source_documents']):
+                print(f"Source {i+1} metadata: {doc.metadata}")
+                chunk_index = doc.metadata.get('chunk_index')
+                if chunk_index is not None and chunk_index < len(st.session_state.chunk_locations):
+                    print(f"  Chunk location found: {st.session_state.chunk_locations[chunk_index]}")
+                else:
+                    print(f"  No chunk location found for index {chunk_index}")
         else:
             st.session_state.current_source_docs = []
+            print("No source documents found in response")
         
         # Force a rerun to update the chat history
         st.rerun()
@@ -609,7 +678,13 @@ def display_chat_history():
     # Create a scrolling container for chat messages with fixed height
     chat_container = st.container(height=650)
     with chat_container:
+        # Keep track of which conversation pair we're on
+        conversation_idx = 0
         for i, message in enumerate(st.session_state.chat_history):
+            # Update conversation index for each user message (even indices)
+            if i % 2 == 0:
+                conversation_idx = i // 2
+            
             if i % 2 == 0:
                 st.markdown(user_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
             else:
@@ -622,7 +697,7 @@ def display_chat_history():
                         <div style="margin-top: 10px; margin-bottom: 10px; padding: 10px; border-radius: 5px; background-color: #f0f2f6;">
                             <p style="margin: 0; font-size: 0.9em;">
                                 <strong>📚 Sources:</strong> Listed below in order of relevance to your question. 
-                                The relevance score indicates how closely each source matches your query.
+                                The relevance score indicates how closely each source matches your question.
                             </p>
                         </div>
                     """, unsafe_allow_html=True)
@@ -643,22 +718,51 @@ def display_chat_history():
                         relevance_score = int(score * 100)
                         
                         # Create the source reference with relevance bar
-                        st.markdown(f'''
-                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-                                <button class="page-ref" data-page="{pages[0] if pages else 1}" 
-                                        style="min-width: 150px; padding: 5px 10px; border: 1px solid #ddd; border-radius: 5px; background: white;">
-                                    📄 Source {idx}: {page_str}
-                                </button>
-                                <div style="
-                                    background: linear-gradient(90deg, #00acee {relevance_score}%, #f0f2f6 {relevance_score}%);
-                                    height: 8px;
-                                    width: 100px;
-                                    border-radius: 4px;
-                                    margin-right: 5px;">
+                        col1, col2 = st.columns([1, 3])
+                        with col1:
+                            # Get the text content directly from the source document
+                            highlight_text = ""
+                            # First try to get a sample of text from the page_content
+                            if doc.page_content:
+                                # Extract a larger sample (first 200 chars) for better matching
+                                highlight_text = doc.page_content[:200]
+                                # Clean up the text - remove newlines and extra spaces
+                                highlight_text = ' '.join(highlight_text.split())
+                                print(f"Source {idx} using page_content: {highlight_text[:50]}...")
+                            
+                            # If that doesn't work, try the chunk_locations as fallback
+                            if not highlight_text:
+                                chunk_index = doc.metadata.get('chunk_index')
+                                if chunk_index is not None and chunk_index < len(st.session_state.chunk_locations):
+                                    location = st.session_state.chunk_locations[chunk_index]
+                                    highlight_text = location.get('text', '')
+                                    # Get a larger sample for better matching
+                                    if highlight_text and len(highlight_text) > 200:
+                                        highlight_text = highlight_text[:200]
+                                    # Clean up the text - remove newlines and extra spaces
+                                    highlight_text = ' '.join(highlight_text.split())
+                                    print(f"Source {idx} using chunk_location: {highlight_text[:50]}...")
+                                else:
+                                    print(f"Source {idx}: No chunk_index or location found")
+                            
+                            if st.button(f"📄 Source {idx}: {page_str}", key=f"source_{conversation_idx}_{idx}"):
+                                st.session_state.target_page = pages[0] if pages else 1
+                                st.session_state.highlight_text = highlight_text
+                                print(f"Button clicked: Setting highlight_text to: {highlight_text[:30]}...")
+                                st.rerun()
+                        with col2:
+                            st.markdown(f'''
+                                <div style="display: flex; align-items: center; gap: 10px; margin-top: 5px;">
+                                    <div style="
+                                        background: linear-gradient(90deg, #00acee {relevance_score}%, #f0f2f6 {relevance_score}%);
+                                        height: 8px;
+                                        width: 100px;
+                                        border-radius: 4px;
+                                        margin-right: 5px;">
+                                    </div>
+                                    <span style="color: #666; font-size: 0.8em;">{relevance_score}% relevant</span>
                                 </div>
-                                <span style="color: #666; font-size: 0.8em;">{relevance_score}% relevant</span>
-                            </div>
-                        ''', unsafe_allow_html=True)
+                            ''', unsafe_allow_html=True)
 
 def main():
     # Initialize session state
@@ -671,7 +775,7 @@ def main():
     if "chunk_locations" not in st.session_state:
         st.session_state.chunk_locations = None
     if "highlight_text" not in st.session_state:
-        st.session_state.highlight_text = None
+        st.session_state.highlight_text = ""  # Initialize as empty string instead of None
     if "target_page" not in st.session_state:
         st.session_state.target_page = 1
     if "processing_complete" not in st.session_state:
@@ -699,6 +803,10 @@ def main():
                         if raw_text and chunk_locations:
                             # Store chunk locations in session state
                             st.session_state.chunk_locations = chunk_locations
+                            print(f"Stored {len(chunk_locations)} chunk locations in session state")
+                            # Print the first chunk location as a sample
+                            if chunk_locations:
+                                print(f"Sample chunk location: {chunk_locations[0]}")
                             
                             # Get the text chunks
                             text_chunks, new_chunk_locations = get_text_chunks(raw_text, chunk_locations)
