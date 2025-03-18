@@ -37,7 +37,7 @@ S3_BUCKET_NAME = f'draftyai-textract-chat-with-docs-{ENVIRONMENT}'
 
 # Set page configuration
 st.set_page_config(
-    page_title="Chat with PDF - DraftyAI",
+    page_title="Chat with FOIA - DraftyAI",
     page_icon="📄",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -430,10 +430,10 @@ def get_conversation_chain(vectorstore):
         print(f"Error creating conversation chain: {str(e)}")
         raise Exception(f"Failed to initialize conversation chain: {str(e)}")
 
-def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
+def display_pdf(pdf_bytes, highlight_text=None, page_num=1, key=None):
     try:
         # Add logging for highlight_text
-        print(f"display_pdf called with highlight_text: {highlight_text}")
+        print(f"display_pdf called with highlight_text: {highlight_text}, key: {key}")
         
         # Try to read with PyPDF2 to validate PDF
         try:
@@ -536,7 +536,12 @@ def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
                         }}
                     }}, false);
 
-                    async function renderPage(pdf, pageNum, container) {{
+                    // Make zoom functions globally available
+                    window.zoomIn = zoomIn;
+                    window.zoomOut = zoomOut;
+                    window.resetZoom = resetZoom;
+
+                    async function renderPage(pdf, pageNum, container, highlight = false) {{
                         const page = await pdf.getPage(pageNum);
                         const viewport = page.getViewport({{ scale: currentScale }});
 
@@ -564,76 +569,78 @@ def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
                             viewport: viewport
                         }}).promise;
 
-                        // Only highlight if highlight_text is provided and not empty
-                        const highlightText = '{highlight_text}';
-                        console.log('Page', pageNum, 'checking highlight text:', highlightText);
-                        console.log('Is highlight text empty?', !highlightText || highlightText.trim() === '');
-                        console.log('Highlight text type:', typeof highlightText);
-                        console.log('Highlight text length:', highlightText ? highlightText.length : 0);
-                        
-                        // Check that highlight text is not empty and not the string "None"
-                        if (highlightText && highlightText.trim() !== '' && highlightText !== 'None') {{
-                            console.log('Highlighting text on page', pageNum, ':', highlightText);
-                            const textContent = await page.getTextContent();
-                            const textItems = textContent.items;
+                        // If we have highlight text, try to highlight it
+                        // We highlight if either the global highlight text is set or if the highlight parameter is true
+                        if ((window.highlightText && window.highlightText.trim() !== '') || highlight) {{
+                            console.log('Page', pageNum, 'checking highlight text:', window.highlightText);
+                            console.log('Is highlight text empty?', !window.highlightText || window.highlightText.trim() === '');
+                            console.log('Highlight text type:', typeof window.highlightText);
+                            console.log('Highlight text length:', window.highlightText ? window.highlightText.length : 0);
                             
-                            console.log('Found', textItems.length, 'text items on page', pageNum);
-                            
-                            // Keep track of whether we found any matches
-                            let foundMatch = false;
-                            let matchCount = 0;
-                            
-                            // Break the highlight text into words for more flexible matching
-                            const highlightWords = highlightText.toLowerCase().split(/\s+/).filter(word => word.length > 3);
-                            console.log('Searching for words:', highlightWords);
-                            
-                            // Highlight any text item that contains any of the significant words
-                            textItems.forEach(function(textItem, index) {{
-                                // Log every 20th item to avoid console spam
-                                if (index % 20 === 0) {{
-                                    console.log('Sample text item', index, ':', textItem.str);
-                                }}
+                            // Check that highlight text is not empty and not the string "None"
+                            if (window.highlightText && window.highlightText.trim() !== '' && window.highlightText !== 'None') {{
+                                console.log('Highlighting text on page', pageNum, ':', window.highlightText);
+                                const textContent = await page.getTextContent();
+                                const textItems = textContent.items;
                                 
-                                const itemText = textItem.str.toLowerCase();
+                                console.log('Found', textItems.length, 'text items on page', pageNum);
                                 
-                                // Check if this text item contains any of our significant words
-                                let shouldHighlight = false;
-                                for (const word of highlightWords) {{
-                                    if (word.length > 3 && itemText.includes(word)) {{
-                                        shouldHighlight = true;
-                                        console.log('Found word match:', word, 'in:', itemText);
-                                        break;
+                                // Keep track of whether we found any matches
+                                let foundMatch = false;
+                                let matchCount = 0;
+                                
+                                // Break the highlight text into words for more flexible matching
+                                const highlightWords = window.highlightText.toLowerCase().split(/\s+/).filter(word => word.length > 3);
+                                console.log('Searching for words:', highlightWords);
+                                
+                                // Highlight any text item that contains any of the significant words
+                                textItems.forEach(function(textItem, index) {{
+                                    // Log every 20th item to avoid console spam
+                                    if (index % 20 === 0) {{
+                                        console.log('Sample text item', index, ':', textItem.str);
                                     }}
-                                }}
-                                
-                                // Direct match check as fallback
-                                if (!shouldHighlight && itemText.includes(highlightText.toLowerCase())) {{
-                                    shouldHighlight = true;
-                                    console.log('Found direct match in:', itemText);
-                                }}
-                                
-                                if (shouldHighlight) {{
-                                    foundMatch = true;
-                                    matchCount++;
                                     
-                                    const tx = pdfjsLib.Util.transform(
-                                        viewport.transform,
-                                        textItem.transform
-                                    );
+                                    const itemText = textItem.str.toLowerCase();
                                     
-                                    context.beginPath();
-                                    context.rect(tx[4], tx[5], textItem.width * currentScale, textItem.height * currentScale);
-                                    context.fillStyle = 'yellow';
-                                    context.globalAlpha = 0.3;
-                                    context.fill();
-                                    context.globalAlpha = 1.0;
+                                    // Check if this text item contains any of our significant words
+                                    let shouldHighlight = false;
+                                    for (const word of highlightWords) {{
+                                        if (word.length > 3 && itemText.includes(word)) {{
+                                            shouldHighlight = true;
+                                            console.log('Found word match:', word, 'in:', itemText);
+                                            break;
+                                        }}
+                                    }}
+                                    
+                                    // Direct match check as fallback
+                                    if (!shouldHighlight && itemText.includes(window.highlightText.toLowerCase())) {{
+                                        shouldHighlight = true;
+                                        console.log('Found direct match in:', itemText);
+                                    }}
+                                    
+                                    if (shouldHighlight) {{
+                                        foundMatch = true;
+                                        matchCount++;
+                                        
+                                        const tx = pdfjsLib.Util.transform(
+                                            viewport.transform,
+                                            textItem.transform
+                                        );
+                                        
+                                        context.beginPath();
+                                        context.rect(tx[4], tx[5], textItem.width * currentScale, textItem.height * currentScale);
+                                        context.fillStyle = 'yellow';
+                                        context.globalAlpha = 0.3;
+                                        context.fill();
+                                        context.globalAlpha = 1.0;
+                                    }}
+                                }});
+                                
+                                if (foundMatch) {{
+                                    console.log('Found and highlighted', matchCount, 'matches on page', pageNum);
+                                }} else {{
+                                    console.log('No matches found on page', pageNum);
                                 }}
-                            }});
-                            
-                            if (foundMatch) {{
-                                console.log('Found and highlighted', matchCount, 'matches on page', pageNum);
-                            }} else {{
-                                console.log('No matches found on page', pageNum);
                             }}
                         }}
                     }}
@@ -643,7 +650,7 @@ def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
                         container.innerHTML = '';
                         
                         for (let pageNum = 1; pageNum <= pdfDocument.numPages; pageNum++) {{
-                            await renderPage(pdfDocument, pageNum, container);
+                            await renderPage(pdfDocument, pageNum, container, true);
                         }}
                         updateZoomLevel();
                     }}
@@ -656,7 +663,13 @@ def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
                             pdfDocument = await loadingTask.promise;
                             const status = document.getElementById('status');
                             status.style.display = 'block';
-                            status.textContent = 'Rendering PDF...';
+                            
+                            // Check if we're highlighting (when clicking a source button)
+                            if (window.highlightText && window.highlightText.trim() !== '') {{
+                                status.textContent = 'Highlighting the Relevant Sources...';
+                            }} else {{
+                                status.textContent = 'Rendering PDF...';
+                            }}
                             
                             // Calculate initial scale based on first page
                             const firstPage = await pdfDocument.getPage(1);
@@ -665,16 +678,29 @@ def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
                             currentScale = defaultScale;
                             
                             await renderAllPages();
-                            status.textContent = `PDF loaded successfully (${{pdfDocument.numPages}} pages)`;
                             
-                            // Hide status after 5 seconds
-                            setTimeout(() => {{
-                                status.style.opacity = '0';
+                            // If we're highlighting, don't show the success message
+                            if (!(window.highlightText && window.highlightText.trim() !== '')) {{
+                                status.textContent = `PDF loaded successfully (${{pdfDocument.numPages}} pages)`;
+                                
+                                // Hide status after 5 seconds
                                 setTimeout(() => {{
-                                    status.style.display = 'none';
-                                    status.style.opacity = '1';
-                                }}, 300); // Wait for fade out animation
-                            }}, 5000);
+                                    status.style.opacity = '0';
+                                    setTimeout(() => {{
+                                        status.style.display = 'none';
+                                        status.style.opacity = '1';
+                                    }}, 300); // Wait for fade out animation
+                                }}, 5000);
+                            }} else {{
+                                // For highlighting, hide status immediately after rendering
+                                setTimeout(() => {{
+                                    status.style.opacity = '0';
+                                    setTimeout(() => {{
+                                        status.style.display = 'none';
+                                        status.style.opacity = '1';
+                                    }}, 300); // Wait for fade out animation
+                                }}, 1000); // Just 1 second for highlighting
+                            }}
                             
                             scrollToPage({page_num});
                             
@@ -685,13 +711,29 @@ def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
                         }}
                     }}
 
-                    // Make zoom functions globally available
-                    window.zoomIn = zoomIn;
-                    window.zoomOut = zoomOut;
-                    window.resetZoom = resetZoom;
-
-                    loadPDF();
-
+                    // Listen for highlight update events from source buttons
+                    document.addEventListener('updatePdfHighlight', function(e) {{
+                        if (pdfDocument) {{
+                            const highlightText = e.detail.highlightText;
+                            const targetPage = e.detail.targetPage;
+                            
+                            console.log('Received updatePdfHighlight event:', highlightText, targetPage);
+                            
+                            // Update the highlight text
+                            window.highlightText = highlightText;
+                            
+                            // Scroll to the target page
+                            scrollToPage(targetPage);
+                            
+                            // Re-render the page with the new highlight
+                            renderPage(pdfDocument, targetPage, document.getElementById('pdf-container'), true);
+                            
+                            // Clear the stored values
+                            sessionStorage.removeItem('highlightText');
+                            sessionStorage.removeItem('targetPage');
+                        }}
+                    }});
+                    
                     // Add resize handler
                     let resizeTimeout;
                     addEventListener('resize', function() {{
@@ -710,6 +752,43 @@ def display_pdf(pdf_bytes, highlight_text=None, page_num=1):
                             }}
                         }}, 250); // Wait 250ms after resize ends before recalculating
                     }});
+                    
+                    // Check for stored highlight on page load
+                    window.addEventListener('load', function() {{
+                        const storedHighlight = sessionStorage.getItem('highlightText');
+                        const storedPage = sessionStorage.getItem('targetPage');
+                        
+                        if (storedHighlight && storedPage && pdfDocument) {{
+                            console.log('Found stored highlight:', storedHighlight, storedPage);
+                            
+                            // Update the highlight text
+                            window.highlightText = storedHighlight;
+                            
+                            // Scroll to the target page
+                            scrollToPage(parseInt(storedPage));
+                            
+                            // Re-render the page with the new highlight
+                            renderPage(pdfDocument, parseInt(storedPage), document.getElementById('pdf-container'), true);
+                            
+                            // Clear the stored values
+                            sessionStorage.removeItem('highlightText');
+                            sessionStorage.removeItem('targetPage');
+                        }}
+                    }});
+                    
+                    // Initialize with the highlight text
+                    window.highlightText = '{highlight_text}';
+                    
+                    // Make highlight text accessible globally
+                    window.updateHighlightText = function(text, page) {{
+                        window.highlightText = text;
+                        if (pdfDocument) {{
+                            scrollToPage(page);
+                            renderPage(pdfDocument, page, document.getElementById('pdf-container'), true);
+                        }}
+                    }};
+                    
+                    loadPDF();
                 }})(); // End IIFE
             </script>
         '''
@@ -732,6 +811,7 @@ def handle_userinput(user_question):
         # Clear any existing highlight when asking a new question
         st.session_state.highlight_text = ""  # Empty string instead of None
             
+        st.session_state.is_loading = True
         response = st.session_state.conversation({'question': user_question})
         st.session_state.chat_history = response['chat_history']
         st.session_state.current_question = user_question
@@ -750,6 +830,7 @@ def handle_userinput(user_question):
             st.session_state.current_source_docs = []
             print("No source documents found in response")
         
+        st.session_state.is_loading = False
         # Force a rerun to update the chat history
         st.rerun()
 
@@ -827,11 +908,27 @@ def display_chat_history():
                                 else:
                                     print(f"Source {idx}: No chunk_index or location found")
                             
-                            if st.button(f"📄 Source {idx}: {page_str}", key=f"source_{conversation_idx}_{idx}"):
-                                st.session_state.target_page = pages[0] if pages else 1
-                                st.session_state.highlight_text = highlight_text
-                                print(f"Button clicked: Setting highlight_text to: {highlight_text[:30]}...")
-                                st.rerun()
+                            # Use native Streamlit button with an icon
+                            if st.button(f"📄 Source {idx}: {page_str}", key=f"source_{conversation_idx}_{idx}", 
+                                       on_click=handle_source_click, 
+                                       args=(pages[0] if pages else 1, highlight_text)):
+                                pass
+                                
+                            # Add custom styling for the source buttons
+                            st.markdown("""
+                            <style>
+                                /* Style the source buttons */
+                                button[data-testid*="source_"] {
+                                    background-color: rgb(66, 133, 244) !important;
+                                    color: white !important;
+                                    border: none !important;
+                                }
+                                
+                                button[data-testid*="source_"]:hover {
+                                    background-color: rgb(41, 98, 255) !important;
+                                }
+                            </style>
+                            """, unsafe_allow_html=True)
                         with col2:
                             st.markdown(f'''
                                 <div style="display: flex; align-items: center; gap: 10px; margin-top: 5px;">
@@ -845,6 +942,12 @@ def display_chat_history():
                                     <span style="color: #666; font-size: 0.8em;">{relevance_score}% relevant</span>
                                 </div>
                             ''', unsafe_allow_html=True)
+
+def handle_source_click(page, text):
+    st.session_state.target_page = page
+    st.session_state.highlight_text = text
+    # Increment the render key to force a re-render of the PDF
+    st.session_state.pdf_render_key += 1
 
 def render_drafty_header():
     """Render the DraftyAI header that looks like the production app."""
@@ -922,7 +1025,7 @@ def render_drafty_header():
                     <div style="
                         width: 33%;
                         height: 100%;
-                        background-color: #4285F4;
+                        background-color: rgb(66, 133, 244);
                         border-radius: 4px;
                     "></div>
                 </div>
@@ -939,132 +1042,115 @@ def render_drafty_header():
     st.markdown(header_html, unsafe_allow_html=True)
 
 def main():
+    # Initialize session state variables if they don't exist
+    if "conversation" not in st.session_state:
+        st.session_state.conversation = []
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+    if "pdf_bytes" not in st.session_state:
+        st.session_state.pdf_bytes = None
+    if "is_loading" not in st.session_state:
+        st.session_state.is_loading = False
+    if "submitted_input" not in st.session_state:
+        st.session_state.submitted_input = ""
+    if "current_question" not in st.session_state:
+        st.session_state.current_question = ""
+    if "render_key" not in st.session_state:
+        st.session_state.render_key = 0
+    if "pdf_docs" not in st.session_state:
+        st.session_state.pdf_docs = []
+    if "chunk_locations" not in st.session_state:
+        st.session_state.chunk_locations = []
+    if "current_source_docs" not in st.session_state:
+        st.session_state.current_source_docs = []
+    if "target_page" not in st.session_state:
+        st.session_state.target_page = 1
+    if "highlight_text" not in st.session_state:
+        st.session_state.highlight_text = ""
+    if "pdf_render_key" not in st.session_state:
+        st.session_state.pdf_render_key = 0
+    if "processing_complete" not in st.session_state:
+        st.session_state.processing_complete = False
+        
+    # Add global styling for all buttons
+    st.markdown("""
+    <style>
+        /* Global button styling */
+        .stButton > button {
+            background-color: rgb(66, 133, 244) !important;
+            color: white !important;
+            border: none !important;
+        }
+        
+        .stButton > button:hover {
+            background-color: rgb(41, 98, 255) !important;
+        }
+        
+        /* Style the file uploader */
+        .stFileUploader > div > div {
+            background-color: rgb(66, 133, 244) !important;
+            color: white !important;
+        }
+        
+        /* Style the zoom and autofit buttons */
+        button {
+            background-color: rgb(66, 133, 244) !important;
+            color: white !important;
+            border: none !important;
+            border-radius: 4px !important;
+        }
+        
+        button:hover {
+            background-color: rgb(41, 98, 255) !important;
+        }
+        
+        /* Style the submit button */
+        div[data-testid="stFormSubmitButton"] > button {
+            background-color: rgb(66, 133, 244) !important;
+            color: white !important;
+            border-radius: 50% !important;
+            width: 40px !important;
+            height: 40px !important;
+            padding: 0px !important;
+            font-size: 20px !important;
+            line-height: 1 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            margin: 0 auto !important;
+            min-width: unset !important;
+        }
+        
+        div[data-testid="stFormSubmitButton"] > button:hover {
+            background-color: rgb(41, 98, 255) !important;
+        }
+        
+        /* Remove form border */
+        div[data-testid="stForm"] {
+            border: none !important;
+            padding: 0 !important;
+        }
+        
+        /* Adjust text area width */
+        .stTextArea textarea {
+            border-radius: 10px !important;
+            border: 1px solid #e0e0e0 !important;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+    
     # Render the DraftyAI header
     render_drafty_header()
     
     # Add some spacing after the header
     st.markdown("<div style='padding: 20px;'></div>", unsafe_allow_html=True)
     
-    # Initialize session state
-    if "conversation" not in st.session_state:
-        st.session_state.conversation = None
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = None
-    if "pdf_docs" not in st.session_state:
-        st.session_state.pdf_docs = None
-    if "chunk_locations" not in st.session_state:
-        st.session_state.chunk_locations = None
-    if "highlight_text" not in st.session_state:
-        st.session_state.highlight_text = ""  # Initialize as empty string instead of None
-    if "target_page" not in st.session_state:
-        st.session_state.target_page = 1
-    if "processing_complete" not in st.session_state:
-        st.session_state.processing_complete = False
-    if "submitted_input" not in st.session_state:
-        st.session_state.submitted_input = None
-
     # Check if processing is complete
-    if st.session_state.processing_complete:
-        # Create columns for the document viewer and chat
-        doc_col, chat_col = st.columns([1, 1], gap="medium")
-        
-        # Left side - PDF viewer in a container
-        with doc_col:
-            pdf_container = st.container(height=650)
-            with pdf_container:
-                pdf_doc = st.session_state.pdf_docs[0]
-                pdf_doc.seek(0)
-                pdf_bytes = pdf_doc.read()
-                display_pdf(pdf_bytes, highlight_text=st.session_state.highlight_text, page_num=st.session_state.target_page)
-        
-        # Right side - Chat responses
-        with chat_col:
-            # Chat history in a fixed height container
-            chat_container = st.container(height=650)
-            with chat_container:
-                display_chat_history()
-        
-        # Chat input below both columns
-        def submit():
-            if st.session_state.user_input.strip():
-                st.session_state.submitted_input = st.session_state.user_input
-                st.session_state.user_input = ""
-
-        # Create a three-column layout with the middle column taking 80% width
-        _, input_col, _ = st.columns([1, 4, 1])
-        with input_col:
-            st.markdown("""
-                <style>
-                    .stTextArea textarea {
-                        height: 100px !important;
-                        min-height: 100px !important;
-                        max-height: 100px !important;
-                        padding: 10px !important;
-                        font-size: 1em !important;
-                        border-radius: 10px !important;
-                        border: 1px solid #ccc !important;
-                        resize: none !important;
-                    }
-                    .stTextArea div[data-baseweb="textarea"] {
-                        height: auto !important;
-                        margin-bottom: 30px !important;  /* Add space for the hint */
-                    }
-                    .stTextArea label {
-                        display: none !important;
-                    }
-                    /* Style the command hint text */
-                    small[data-testid="stChatInputStatus"] {
-                        position: absolute !important;
-                        bottom: 15px !important;
-                        right: 15px !important;
-                        padding: 4px 8px !important;
-                        background: rgba(255, 255, 255, 0.9) !important;
-                        border-radius: 4px !important;
-                        font-size: 0.8em !important;
-                        color: #666 !important;
-                        margin: 0 !important;
-                    }
-                </style>
-            """, unsafe_allow_html=True)
-            
-            st.text_area("", 
-                        placeholder="Ask a question about your document...", 
-                        key="user_input",
-                        on_change=submit,
-                        label_visibility="collapsed",
-                        height=100)
-        
-        # Handle submitted input
-        if st.session_state.submitted_input:
-            handle_userinput(st.session_state.submitted_input)
-            st.session_state.submitted_input = None
-            st.rerun()
-    else:
-        # Show full-width placeholder when no documents are processed
-        st.markdown(
-            """
-            <div class="placeholder-container">
-                <div style="text-align: center; color: #666;">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" 
-                         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                        <polyline points="14 2 14 8 20 8"></polyline>
-                        <line x1="12" y1="18" x2="12" y2="12"></line>
-                        <line x1="9" y1="15" x2="15" y2="15"></line>
-                    </svg>
-                    <p style="margin-top: 10px;">Upload a PDF to begin</p>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-        
+    if 'processing_complete' not in st.session_state or not st.session_state.processing_complete:
         # Upload PDFs - Moved from sidebar to main area using columns for proper width control
         col1, col2, col3 = st.columns([1, 1, 1])
         
         with col2:
-            st.markdown("<div style='background-color: #f9f9f9; border-radius: 10px; padding: 20px;'>", unsafe_allow_html=True)
-            st.markdown("### Your documents")
             pdf_docs = st.file_uploader(
                 "Upload your PDFs here and click on 'Process'", 
                 accept_multiple_files=True,
@@ -1107,9 +1193,85 @@ def main():
                         except Exception as e:
                             st.error(f"Error processing documents: {str(e)}")
                             st.session_state.processing_complete = False
-                    else:
-                        st.warning("Please upload at least one PDF document.")
-            st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        # Create columns for the document viewer and chat
+        doc_col, chat_col = st.columns([1, 1], gap="medium")
+        
+        # Left side - PDF viewer in a container
+        with doc_col:
+            pdf_container = st.container(height=650)
+            with pdf_container:
+                pdf_doc = st.session_state.pdf_docs[0]
+                pdf_doc.seek(0)
+                pdf_bytes = pdf_doc.read()
+                st.markdown('<div class="pdf-viewer">', unsafe_allow_html=True)
+                display_pdf(pdf_bytes, highlight_text=st.session_state.highlight_text, page_num=st.session_state.target_page, key=st.session_state.pdf_render_key)
+                st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Right side - Chat responses
+        with chat_col:
+            # Chat history in a fixed height container
+            chat_container = st.container(height=650)
+            with chat_container:
+                display_chat_history()
+        
+        # Chat input below both columns
+        if st.session_state.is_loading:
+            # Display a loading animation
+            loading_html = """
+            <div class="loading-container" style="display: flex; justify-content: center; margin: 20px 0;">
+                <div class="loading-spinner" style="
+                    width: 40px;
+                    height: 40px;
+                    border: 5px solid rgba(66, 133, 244, 0.2);
+                    border-top-color: rgb(66, 133, 244);
+                    border-radius: 50%;
+                    animation: spin 1s ease-in-out infinite;
+                "></div>
+            </div>
+            <style>
+                @keyframes spin {
+                    to { transform: rotate(360deg); }
+                }
+            </style>
+            <div style="text-align: center; color: #666; margin-top: 10px;">
+                Thinking...
+            </div>
+            """
+            st.markdown(loading_html, unsafe_allow_html=True)
+            
+            # Add a temporary user message to show what was asked
+            if 'current_question' in st.session_state and st.session_state.current_question:
+                st.markdown(user_template.replace("{{MSG}}", st.session_state.current_question), unsafe_allow_html=True)
+        else:
+            # Create a form with no border
+            with st.form(key="chat_form", border=False):
+                col1, col2 = st.columns([9, 1])
+                with col1:
+                    user_input = st.text_area("", 
+                                        placeholder="Ask a question about your document...", 
+                                        key="user_input",
+                                        label_visibility="collapsed",
+                                        height=100)
+                with col2:
+                    # Add some vertical spacing to align the button with the text area
+                    st.markdown("<div style='margin-top: 25px;'></div>", unsafe_allow_html=True)
+                    
+                    # Create a simple submit button with an arrow icon
+                    submit_button = st.form_submit_button(
+                        label="↑",
+                        help="Submit your question"
+                    )
+            
+                # Handle form submission
+                if submit_button and user_input.strip():
+                    st.session_state.submitted_input = user_input
+        
+        # Handle submitted input
+        if st.session_state.submitted_input:
+            handle_userinput(st.session_state.submitted_input)
+            st.session_state.submitted_input = None
+            st.rerun()
 
 if __name__ == '__main__':
     main()
